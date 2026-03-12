@@ -1,0 +1,1270 @@
+---
+title: "Getting started with RBesT and Bayesmeta (binary)"
+subtitle: "Position Paper"
+author:
+- "Martín Gramage"
+date: "`r Sys.Date()`"
+abstract: Version 1.0
+
+format:
+  html: default
+css: style.css
+csl: numeric.csl
+bibliography: ref.bib
+code-fold: true
+code-tools: true
+
+execute:
+  echo: true
+  eval: true
+  warning: false
+  error: false
+  message: false
+
+number-sections: true
+crossref:
+  chapters: true
+
+toc: true
+toc-depth: 4
+editor: visual
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, eval= TRUE, include=FALSE, results='asis'}
+rm(list=ls())
+options(rgl.useNULL=TRUE)
+library(rgl)
+library(knitr)
+library(gt)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(rpact)
+library(RBesT)
+library(huxtable)
+```
+
+# Introduction
+
+In this vignette we explain the workflow of two different packages used to derive meta‑analytic predictive (MAP) prior distributions, which facilitate the incorporation of historical information into clinical trials. In both scenarios, a Bayesian hierarchical model is built to link the endpoint to latent parameters, which themselves are treated as parameters with an additional layer of hyperparameters. This structure allows us to use the data to update the initial prior distributions of the latent parameters, obtain their posterior distributions, and effectively summarize the information from past studies into informative priors. However, since the posterior distribution is not usually analytically tractable, different approaches are required to approximate it.
+
+## RBesT:
+
+The R Bayesian evidence synthesis Tools (RBesT) is based on MCMC computation to obtain an empirical assimptotically correct posterior distribution, which is later fitted to a parametric distribution.
+
+## Bayesmeta:
+
+Bayesmeta uses analytic numerical integration under normality assumptions, which makes the computation faster but requires approximations when dealing with non‑normal endpoints. It produces a fully analytical mixture distribution that can be directly used in the subsequent steps of the workflow.
+
+# Control borrowing
+
+For our example, we will demonstrate how to apply both methods and discuss when each should be preferred in the context of Bayesian borrowing for the control group of a unidimensional endpoint.
+
+Let's consider a Novartis Phase II study in ankylosing spondylitis comparing the Novartis test treatment secukinumab with placebo [@baeten2013anti]. The primary efficacy endpoint was percentage of patients with a 20% response according to the Assessment of SpondyloArthritis international Society criteria for improvement (ASAS20) at week 6. This dataset is part of RBesT and available after loading the package in the data frame AS. For the control group, the following historical data were used to derive the MAP prior:
+
+```{r, results="asis", echo=FALSE, warning=FALSE, message=FALSE}
+library(huxtable)
+
+# Convert AS dataframe into a huxtable
+ht <- as_hux(AS, add_colnames = TRUE)
+
+# Add a header row (3 columns, not 4)
+ht <- rbind(
+  c("Novartis Phase II study in ankylosing spondylitis", "", ""),
+  ht
+)
+
+# Merge cells for the header row (3 columns)
+ht <- set_colspan(ht, 1, 1, 3)
+
+# Style header row
+ht <- set_background_color(ht, 1, everywhere, "#08312A")
+ht <- set_text_color(ht, 1, everywhere, "#00E47C")
+ht <- set_bold(ht, 1, everywhere, TRUE)
+ht <- set_font_size(ht, 1, everywhere, 12)
+align(ht)[1, ] <- "center"
+
+# Style column headers (row 2)
+ht <- set_bold(ht, 2, everywhere, TRUE)
+ht <- set_background_color(ht, 2, everywhere, "#08312A")
+ht <- set_text_color(ht, 2, everywhere, "#00E47C")
+
+# Alternating row colors
+background_color(ht)[3:nrow(ht), ] <- rep(c("white", "lightgray"), length.out = nrow(ht) - 2)
+
+# Adjust column widths (3 columns)
+col_width(ht) <- c(0.4, 0.3, 0.3)
+
+# Reduce font size for table content
+font_size(ht)[3:nrow(ht), ] <- 9
+
+# Align text in the "study" column to the left
+align(ht)[3:nrow(ht), 1] <- "left"
+
+# Allow markdown rendering inside cells
+escape_contents(ht) <- FALSE
+
+# Display the huxtable
+ht
+
+```
+
+# Prior Derivation
+
+## RBesT
+
+### Meta-Analytic-Predictive Analysis
+
+The **`gMAP`** function performs the meta-analysis and the prediction, which yields the MAP prior. The analysis is run using stochastic Markov-Chain-Monte-Carlo with Stan. In order to make results exactly reproducible, the `set.seed` function must be called prior to calling **`gMAP`** .
+
+A key parameter in a meta-analysis is the between-trial heterogeneity parameter $\tau$ which controls the amount of borrowing from historical information for the estimation of the population mean will occur. As we often have only few historical trials, the prior is important. For binary endpoints with an expected response rate of 20%-80% we recommend a conservative `HalfNormal(0,1)` prior as a default. Please refer to the help-page of **`gMAP`** for more information.
+
+### Specifying the prior distributions
+
+As explained in the [RBesT reference for Generalized Linear Models](https://opensource.nibr.com/RBesT/reference/gMAP.html#prior-specification), the prior distribution for the regression coefficients $\beta$ is defined as a normal, being recommended to specify a `beta.prior`. As the data from the studies is sufficiently informative, we use a vague prior where a mean of 0 is set per default. Additionally the standard deviation is set to 2 for the binary case [@schmidli2014robust].
+
+On the other hand, due to the limited number of historical trials, it is often challenging to reliably estimate the distribution of the heterogeneity parameter $\tau$ from the data alone. Therefore, the prior distribution for $\tau$ must be explicitly specified, selected from one of the following supported options: `"HalfNormal"`, `"TruncNormal"`, `"Uniform"`, `"Gamma"`, `"InvGamma"`, `"LogNormal"`, `"TruncCauchy"`, `"Exp"`, or `"Fixed"`.
+
+A uniform prior can only yield an integrable proper posterior with at least 3 studies, and it is commonly considered overly conservative. Therefore, in order to choose a proper prior for the heterogeneity, the distribution not only needs to be flexible near zero (avoiding favoring small values on the $\tau$ scale), but also to decay properly [@röver2021predictively].
+
+Although Sebastian Weber has commented on his preference to use a Penalized Complexity prior, he also stresses that the accepted prior in literature is a Half-Normal [@weber2024applied], which maintains a conservative approach and should be used if no proven reasons dismiss it for the case study. It ensures a flat behavior close to 0, and has a Gaussian-like decay.
+
+As for the scale parameter (*s)*, it is related to $\sigma$ and it is endpoint specific. For binary endpoints, a Half-Normal prior with a standard deviation of 1 puts approximately 5% probability for values of $\tau$ greater than 2. While value of $\tau$ = 2 corresponds to very large between-trial variability on the log-odds-scale, and would result in minimal borrowing from historical data [@schmidli2014robust]. Among literature agreement, a scale parameter of 0.5 is often preferred, as it reflects the empirical evidence that $\tau$ usually falls on moderate values [@turner2012predicting; @turner2015predictive; @gunhan2020random]. It assigns approximately half of the probability to values that range from 0.2 to 0.5, which ensures that most of the prior mass lies where the real heterogeneity has often been observed. Additionally, in cases where we expect a higher homogeneity among studies (e.g, Phase III twin clinical trials), we can reduce the standard deviation to better reflect our initial information.
+
+### Graphical representation
+
+The **`gMAP`** function returns an analysis object from which we can extract information using the functions from RBesT. We do recommend to look at the graphical model checks provided by RBesT as demonstrated below. The most important one is the forest plot, with solid lines for the MAP model predictions and dashed lines for the stratified estimates. For a standard forest plot without the shrinkage estimates please refer to the `forest_plot` function in RBesT.
+
+```{r, warning=FALSE}
+# load R packages
+library(RBesT)
+library(ggplot2)
+theme_set(theme_bw()) # sets up plotting theme
+
+set.seed(34563)
+map_mcmc <- gMAP(cbind(r, n - r) ~ 1 | study,
+  data = AS,
+  tau.dist = "HalfNormal",
+  tau.prior = 1,
+  beta.prior = 2,
+  family = binomial
+)
+print(map_mcmc)
+
+## a graphical representation of model checks is available
+pl <- plot(map_mcmc)
+
+## a number of plots are immediately defined
+names(pl)
+
+## forest plot with model estimates
+print(pl$forest_model)
+```
+
+An often raised concern with a Bayesian analysis is the choice of the prior. Hence sensitivity analyses may sometimes be necessary. They can be quickly performed with the **`update`** function. Suppose we want to use the conventionally accepted Half-Normal (0, 1/2) prior on $\tau$ to evaluate a more optimistic scenario (with less between-trial heterogeneity). Then we can rerun the original analysis, but with modified arguments of **`gMAP`**:
+
+```{r, warning=FALSE}
+set.seed(36546)
+map_mcmc_sens <- update(map_mcmc, tau.prior = 1 / 2)
+print(map_mcmc_sens)
+```
+
+### Underlying Stan computation
+
+When performing MCMC-based Bayesian inference in `RBesT`, it is important to remember that the computation is powered by Stan—a robust probabilistic programming engine known for Hamiltonian Monte Carlo (HMC) sampling. Consequently, common issues such as poor convergence or low effective sample size of the simulated MCMC sample (not to confuse with the effective sample size of the MAP distribution) can be addressed using standard solutions developed for [Stan workflows](https://mc-stan.org/rstan/articles/rstan.html#sampling-difficulties). One straightforward remedy is to augment the number of iterations, allowing the sampler more opportunity to explore the posterior space. Additional transferable strategies include:
+
+-   Increasing `adapt_delta` to improve step acceptance and reduce divergences
+-   Raising `max_treedepth` to enable deeper exploration of complex posterior geometries
+-   Running multiple chains and monitoring $\hat{R}$ to assess convergence
+-   Applying sufficient warm-up (burn-in) iterations
+-   Inspecting trace plots for mixing and autocorrelation
+
+### Parametric Approximation
+
+As a next step, the MAP prior, represented numerically using a large MCMC simulation sample, is converted to a parametric representation with the **`automixfit`** function. This function fits a parametric mixture representation using expectation-maximization (EM). The number of mixture components to best describe the MAP is chosen automatically. By default the function chooses from up to 4 elements using the Akaike information criterion (AIC), whose penalty parameter is set in 6. Again, the `plot` function produces a graphical diagnostic which allows the user to assess whether the marginal mixture density (shown in black) matches well with the histogram of the MAP MCMC sample.
+
+While a kernel-density estimate from the MCMC sample or a Rao-Blackwellized density estimate can characterize the MAP prior, these approaches often involve a large number of parameters, which complicates both their interpretation and application in the context of a new trial. A more practical and parsimonious alternative is to approximate the prior using mixtures of conjugate distributions. In the binary response, this corresponds to an approximation of a mixture of beta distributions [@schmidli2014robust].
+
+```{r, warning=FALSE}
+map <- automixfit(map_mcmc)
+print(map)
+plot(map)$mix
+plot(map)$mixdist
+```
+
+## Bayesmeta
+
+In order to enrich our analysis we can compare the results with the ones we would obtain using the `Bayesmeta` package approach. The `bayesmeta` function only supports NNHM (Normal-Normal Hierarchical Models) with known $\sigma$, so we need to adapt the meta-analysis to our case.
+
+As referred in their instructions [@rover2020bayesian], we first need to transform our data with the logit link using the function `escalc`, in order to approximate the binary endpoint to the mean and standard deviation of the effect size for each study. We then use the function `bayesmeta` to obtain a *bayesmeta* class object. This object allows, among other options, to directly compute the posterior predictive probability density for $\theta$, which we expect to be a mix of normal distributions.
+
+```{r, message=FALSE, warning=FALSE}
+library("bayesmeta")
+#bayesmeta works with NNHM only, we need to calculate the effect estimates (log-odds) and their sd.
+
+AS_esc<-escalc(measure = "PLO", xi=r, ni=n, slab=study, data=AS)
+
+map_bm<-bayesmeta(
+  AS_esc,
+  tau.prior = function(t) { dhalfnormal(t, scale = 1) },
+  mu.prior.mean = 0,
+  mu.prior.sd = 2 # corresponds to beta.prior in gMAP (normal distribution, scale = 2)
+  )
+print(map_bm)
+
+map_bm$summary[c(2,5,6), "theta"]
+map_bm$summary
+```
+
+Its underlying method collapses the hierarchical model to integrate the latent parameters and express the endpoint directly in relation to the hyperparameters.
+
+First, we need to remember that we have changed the endpoint from binomial to normal. Given $k$ independent studies with estimates of the effect $y_i$ with known means $\theta_i$ and standard errors $\sigma_i$, the Bayesian random-effects meta-analysis model assumes the following:
+
+1.  Sampling model (study-level observations):
+
+$$ y_i \mid \theta_i, \sigma_i \sim \mathcal{N}(\theta_i, \sigma_i^2)\text{.} $$
+
+2.  Random effects model (study-level true effects):
+
+$$ \theta_i \mid \mu, \tau \sim \mathcal{N}(\mu, \tau^2)\text{.} $$
+
+3.  Marginal model (after integrating out $\theta_i$):
+
+$$ y_i \mid \mu, \tau, \sigma_i \sim \mathcal{N}(\mu, \sigma_i^2 + \tau^2)\text{,} $$
+
+where:
+
+\- $\mu$ is the overall effect size.
+
+\- $\tau^2$ captures between-study heterogeneity.
+
+\- $\sigma_i^2$ is the known sampling variance for study $i$.
+
+Using the improper uniform prior for the global effect $\mu$ (i.e., $p(\mu) \propto 1$), we can derive the marginal likelihood, marginalized over $\mu$:
+
+$$ p(\mathbf{y} \mid \tau, \boldsymbol{\sigma}) = \int p(\mathbf{y} \mid \mu, \tau, \boldsymbol{\sigma}) \cdot p(\mu) \, d\mu\text{.} $$
+
+As long as a uniform or normal prior for the global effect $\mu$ is used, the global effect’s conditional posterior distribution for a given heterogeneity value, $p(\mu|\tau,y,\sigma)$, is normal with mean $\hat\mu(\tau)$ and standard deviation $\hat\sigma(\tau)$.
+
+Where $\hat{\mu}(\tau)$ is the conditional posterior mean of $\mu$ given heterogeneity $\tau$, defined by:
+
+$$ \hat{\mu}(\tau) = \mathbb{E}[\mu \mid \tau, \mathbf{y}, \boldsymbol{\sigma}] = \frac{\sum_{i=1}^{k} \frac{y_i}{\sigma_i^2 + \tau^2}}{\sum_{i=1}^{k} \frac{1}{\sigma_i^2 + \tau^2}}\text{,} $$
+
+and the corresponding standard deviation is:
+
+$$ \hat{\sigma}(\tau) = \sqrt{ \mathrm{Var}(\mu \mid \tau, \mathbf{y}, \boldsymbol{\sigma}) } = \sqrt{ \frac{1}{\sum_{i=1}^{k} \frac{1}{\sigma_i^2 + \tau^2}} } \text{.} $$
+
+Therefore, for the normal-normal hierarchical model (NNHM), this integral evaluates to:
+
+$$ p(\mathbf{y} \mid \tau, \boldsymbol{\sigma}) =  (2\pi)^{-k/2} \cdot \left( \prod_{i=1}^{k} \frac{1}{\sqrt{\sigma_i^2 + \tau^2}} \right) \cdot \exp\left( -\frac{1}{2} \sum_{i=1}^{k} \frac{(y_i - \hat{\mu}(\tau))^2}{\sigma_i^2 + \tau^2} \right) \cdot \frac{1}{\sqrt{\sum_{i=1}^{k} \frac{1}{\sigma_i^2 + \tau^2}}}\text{.} $$
+
+Having derived the marginal likelihood $p(\mathbf{y} \mid \tau, \boldsymbol{\sigma})$, the (one-dimensional) marginal posterior density of $\tau$ may be computed (up to a normalizing constant) by multiplication with the heterogeneity prior:
+
+$$ p(\tau \mid \mathbf{y}, \boldsymbol{\sigma}) \propto p(\mathbf{y} \mid \tau, \boldsymbol{\sigma}) \cdot p(\tau)\text{.} $$
+
+Finally, the marginal distribution of the global effect $\mu$, which forms a normal mixture, can be approximated by using a discrete grid of $\tau$ values and summing the conditional normal distributions, weighted by the marginal density of $\tau$:
+
+$$ p(\mu\mid \mathbf{y}, \boldsymbol{\sigma}) = \int p(\mu \mid \tau) \cdot p(\tau) \, d\tau \approx \sum_j p(\mu \mid \tau_j) \cdot w_j\text{,} $$where:
+
+\- $p(\mu \mid \tau_j)$ is the conditional posterior distribution of $\mu$ given $\tau_j \text{.}$
+
+\- $w_j$ is the posterior weight assigned to grid point $\tau_j$, proportional to $p(\mathbf{y} \mid \tau_j) \cdot p(\tau_j)\text{.}$
+
+After both marginal posterior distributions for the global effect ($\mu$) and the heterogeneity across studies ($\tau$) have been obtained, `bayesmeta` can directly derive the marginal posterior predictive distribution for the effect ($\theta$) by specifying the argument `predict=TRUE`. Choosing among `$dposterior()`, `$pposterior()`, `$qposterior()`, `$rposterior()`, we can access the probability density, the cumulative distribution, the quantile function, or generate a random sample of the posterior predictive distribution for $\theta$, respectively.
+
+```{r, warning=FALSE}
+map_bm$summary
+
+x <- seq(from=-0, to=2.5, length=10000)
+plot(x, map_bm$dposterior(tau=x), type="l", col="red",xlab=expression("effect "*tau), ylab="posterior density")
+
+map_bm$theta
+
+```
+
+In order to later compare the results to those obtained in the RBesT workflow, we need to transform the mixed normal distribution of the effect to the original response scale. The resulting distribution is a mixed logit-normal distribution, as it is composed of variables that, when logit-transformed, follow normal distributions. The pushforward measure for this transformation can be expressed analytically using a change of variables, which must include the appropriate Jacobian correction [@frederic2003logit; @betancourt2023transforming]:
+
+If a random variable $\theta \sim \mathcal{N}(\mu, \sigma^2)$, and you define:
+
+$$ p = \text{logit}^{-1}(\theta) = \frac{1}{1 + e^{-\theta}}, $$
+
+then the transformed variable $p$ follows a logit-normal distribution, and its density is given by:
+
+$$ f(p; \mu, \sigma) = \frac{1}{\sigma \sqrt{2\pi} \cdot p(1 - p)} \cdot \exp\left( -\frac{(\text{logit}(p) - \mu)^2}{2\sigma^2} \right), $$
+
+where $\text{logit}(p) = \log\left( \frac{p}{1 - p} \right)$.
+
+This expression is valid for $p \in (0, 1)$, and describes the probability density function of a logit-normal distribution derived from a normal distribution on the log-odds scale.
+
+Additionally, pushforward measures conserve linearity [@betancourt2023transforming; @schilling2017measures], so the transformation of each component of the mixed normal distribution commutes with the transformation of the entire mixed distribution. Note that independence of components is not required, as the preservation of linearity in image measures arises from the structure of the linear operator acting on the measure space, and not from the independence of random variables. Therefore, we can obtain the mixed logit-normal distribution by transforming the weighted components and mixing them, regardless of whether the components are independent.
+
+```{r, message=FALSE, warning=FALSE}
+#Logit-normal trasformation
+dlogitnorm <- function(p, mu, sigma) {
+  theta <- log(p / (1 - p))
+  (1 / (sigma * sqrt(2 * pi))) * (1 / (p * (1 - p))) * exp(- (theta - mu)^2 / (2 * sigma^2))
+}
+
+#Extract mixture components
+weights <- map_bm$support[,"weight"]
+mus     <- map_bm$support[,"mean"]
+sigmas  <- map_bm$support[,"sd.pred"]
+
+#Transformation
+dlogitnorm_mixture <- function(p, weights, mus, sigmas) {
+  rowSums(sapply(1:length(weights), function(j) {
+    weights[j] * dlogitnorm(p, mu = mus[j], sigma = sigmas[j])
+  }))
+}
+
+#Plotting
+p_vals <- seq(0.001, 0.999, length.out = 1000000)
+dens_p <- dlogitnorm_mixture(p_vals, weights, mus, sigmas)
+library(ggplot2)
+df_plot <- data.frame(p = p_vals, density = dens_p)
+ggplot(df_plot, aes(x = p, y = density)) +
+  geom_line(color = "blue", size = 1.2) +
+  labs(title = "Mixture of Logit-Normal Components",
+       x = "Response scale (p)",
+       y = "Density") +
+  theme_minimal()
+
+
+
+```
+
+-   Graphical comparison
+
+```{r, message=FALSE, warning=FALSE}
+# Mixture components
+w1 <- 0.6167463; a1 <- 19.1916387; b1 <- 57.7779317
+w2 <- 0.3832537; a2 <- 3.5278745; b2 <- 9.3735980
+
+# Mixture density
+mixture_density <- w1 * dbeta(p_vals, a1, b1) + w2 * dbeta(p_vals, a2, b2)
+
+# Combine into long-format data frame for ggplot
+df_plot <- data.frame(
+  p = rep(p_vals, 2),
+  density = c(dens_p, mixture_density),
+  model = factor(rep(c("Logit-Normal Mixture", "Beta Mixture"), each = length(p_vals)))
+)
+
+#Plot
+ggplot(df_plot, aes(x = p, y = density, color = model, linetype = model)) +
+  geom_line(size = 1.2) +
+  labs(title = "Overlay of Logit-Normal and Beta Mixture Densities",
+       x = "Response scale (p)",
+       y = "Density",
+       color = "Model",
+       linetype = "Model") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = c(0.8, 0.85),       # Position inside plot (x, y)
+    legend.justification = c(1, 1),       # Top-right corner
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9)
+  )
+
+```
+
+-   Sampling from the bayesmeta object
+
+We can use the fucntion `$rposterior` included in the bayesmeta object to sample for the posterior predictive distribution for a new $\theta$ . Later, we can use `automixfit` to obtain a parametric distribution based ona weighted mix of beta distributions.
+
+```{r, message=FALSE, warning=FALSE}
+# Generate a large sample from the posterior
+map_bm_samp <- map_bm$rposterior(n = 10000, predict = TRUE, tau.sample = FALSE)
+inv_logit <- function(x) 1 / (1 + exp(-x))
+map_bm_response <- inv_logit(map_bm_samp)
+
+
+# Step 2: Fit a Beta mixture to the predictive sample
+map_bm_fit <- automixfit(map_bm_response, type = "beta", Nc = seq(1, 4), k = 6)
+
+w1 <- 0.4729108; a1 <- 43.9611662; b1 <- 129.9749640
+w2 <- 0.2052649; a2 <- 21.7832565; b2 <- 46.3578701
+w3 <- 0.1661532; a3 <- 15.1864140; b3 <- 64.7926422
+w4 <- 0.1556711; a4 <- 2.4897961;  b4 <- 5.8975396
+
+
+# Mixture density
+mixture_density2 <- 
+  w1 * dbeta(p_vals, a1, b1) +
+  w2 * dbeta(p_vals, a2, b2) +
+  w3 * dbeta(p_vals, a3, b3) +
+  w4 * dbeta(p_vals, a4, b4)
+
+# Combine into long-format data frame for ggplot
+df_plot <- data.frame(
+  p = rep(p_vals, 3),
+  density = c(dens_p, mixture_density, mixture_density2),
+  model = factor(rep(c("Logit-Normal Mixture", "Beta Mixture RBesT", "Beta mixture Bayesmeta"), each = length(p_vals)))
+)
+
+#Plot
+ggplot(df_plot, aes(x = p, y = density, color = model, linetype = model)) +
+  geom_line(size = 1.2) +
+  labs(title = "Overlay of Logit-Normal and Beta Mixture Densities",
+       x = "Response scale (p)",
+       y = "Density",
+       color = "Model",
+       linetype = "Model") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = c(0.8, 0.85),       # Position inside plot (x, y)
+    legend.justification = c(1, 1),       # Top-right corner
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9)
+  )
+
+
+```
+
+```{r}
+# Load required libraries
+library(ggplot2)
+library(gridExtra)
+
+# Create individual plots
+p1 <- ggplot(data.frame(x = map_bm_samp), aes(x = x)) +
+  geom_histogram(binwidth = 0.1, fill = "steelblue", color = "white") +
+  labs(title = "Histogram of Posterior Samples", x = "Sample", y = "Count") +
+  theme_minimal()
+
+p2 <- ggplot(data.frame(x = map_bm_response), aes(x = x)) +
+  geom_histogram(binwidth = 0.02, fill = "darkorange", color = "white") +
+  labs(title = "Histogram of Transformed Response", x = "Response", y = "Count") +
+  theme_minimal()
+
+p3 <- ggplot(data.frame(x = map_bm_samp), aes(x = x)) +
+  geom_density(fill = "skyblue", alpha = 0.5) +
+  labs(title = "Density of Posterior Samples", x = "Sample", y = "Density") +
+  theme_minimal()
+
+p4 <- ggplot(data.frame(x = map_bm_response), aes(x = x)) +
+  geom_density(fill = "orange", alpha = 0.5) +
+  labs(title = "Density of Transformed Response", x = "Response", y = "Density") +
+  theme_minimal()
+
+# Arrange all plots in a 2x2 grid
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+
+```
+
+# Comparison fo the MAP distributions
+
+## Logit-normal mixed distribution
+
+-   Mode
+
+```{r, message=FALSE, warning=FALSE}
+dlogitnorm_mixture <- function(p, weights, mus, sigmas) {
+  sapply(p, function(pt) {
+    sum(sapply(1:length(weights), function(j) {
+      weights[j] * dlogitnorm(pt, mu = mus[j], sigma = sigmas[j])
+    }))
+  })
+}
+
+find_mode_mixture <- function(weights, mus, sigmas) {
+  opt <- optimize(function(p) -dlogitnorm_mixture(p, weights, mus, sigmas),
+                  interval = c(1e-6, 1 - 1e-6), maximum = FALSE)
+  return(opt$minimum)
+}
+
+mode_p <- find_mode_mixture(weights, mus, sigmas)
+
+mode_p
+```
+
+-   Moments
+
+To obtain the raw moments of a mixture distribution, we can extend the linearity of expectation to pushforward measures and compute the weighted sum of the moments of each transformed component [@casella2024statistical]. For univariate distributions, central moments can be derived from raw moments without explicitly accounting for covariance between components [@papoulis2002probability]. However, the logit-normal distribution lacks closed-form expressions for its moments, so they must be computed numerically. In order to do so we can use the function `momentsLogitnorm()` from the package `logitnorm()`, which calculates them using adaptative quadrature [@frederic2003logit].
+
+```{r, message=FALSE, warning=FALSE}
+# Load the package
+library(logitnorm)
+
+# Define mixture parameters
+weights <- map_bm$support[,"weight"]
+mus     <- map_bm$support[,"mean"]
+sigmas  <- map_bm$support[,"sd.pred"]
+
+# Compute mean and variance for each component using logitnorm
+means <- sapply(1:length(weights), function(j) {
+  momentsLogitnorm(mu = mus[j], sigma = sigmas[j])["mean"]
+})
+
+variances <- sapply(1:length(weights), function(j) {
+  momentsLogitnorm(mu = mus[j], sigma = sigmas[j])["var"]
+})
+
+# Mixture mean
+mean_val <- sum(weights * means)
+
+# Mixture variance (law of total variance)
+variance_val <- sum(weights * (variances + (means - mean_val)^2))
+
+# Display results
+data.frame(
+  Metric = c("Mean", "Variance"),
+  Value  = c(mean_val, variance_val)
+)
+```
+
+However, `momentsLogitnorm()` only yields the first two moments. If we wanted to extend its numerical integration via adaptative quadrature, we could do it manually.
+
+```{r, message=FALSE, warning=FALSE}
+#Function for numerical moment calculation of each logit-normal component
+logitnorm_moment_k <- function(mu, sigma, k) {
+  integrate(function(p) {
+    theta <- log(p / (1 - p))
+    dens <- (1 / (sigma * sqrt(2 * pi))) * (1 / (p * (1 - p))) *
+            exp(- (theta - mu)^2 / (2 * sigma^2))
+    p^k * dens
+  }, lower = 0, upper = 1, rel.tol = 1e-10)$value
+}
+
+#Moments for the mixture
+moment_k_mixture <- function(k, weights, mus, sigmas) {
+  sum(sapply(1:length(weights), function(j) {
+    weights[j] * logitnorm_moment_k(mu = mus[j], sigma = sigmas[j], k = k)
+  }))
+}
+
+# Raw moments
+m1 <- moment_k_mixture(1, weights, mus, sigmas) 
+m2 <- moment_k_mixture(2, weights, mus, sigmas)
+m3 <- moment_k_mixture(3, weights, mus, sigmas)
+m4 <- moment_k_mixture(4, weights, mus, sigmas)
+
+#Weighted moments for the logit-normal mixed distribution
+mean_val <- m1
+variance_val <- m2 - m1^2
+skewness_val <- (m3 - 3 * m1 * variance_val - m1^3) / (variance_val)^(3/2)
+kurtosis_val <- (m4 - 4 * m1 * m3 + 6 * m1^2 * m2 - 3 * m1^4) / (variance_val^2)
+
+# Display results
+data.frame(
+  Metric = c("Mean", "Variance", "Skewness", "Kurtosis"),
+  Value  = c(mean_val, variance_val, skewness_val, kurtosis_val)
+)
+```
+
+-   Median and quantiles
+
+In order to obtain the metrics for the logit-normal distribution, we can use directly the cumulative distribution function (CDF) of the predictive prior for $\theta$ and transform it analytically to the response scale. This is due to the equivariance of quantiles under monotone transformations [@chernozhukov2007course].
+
+```{r, warning=FALSE}
+# Posterior predictive CDF from bayesmeta
+pp <- map_bm$pposterior
+
+# Vectorized quantile function in theta space
+q_theta <- function(q) {
+  sapply(q, function(prob) {
+    uniroot(function(x) pp(mu = x, predict = TRUE) - prob,
+            interval = c(-20, 20))$root
+  })
+}
+
+# Logit inverse
+logit_inv <- function(x) 1 / (1 + exp(-x))
+
+
+# Quantiles on probability scale
+quantiles_p <- logit_inv(q_theta(c(0.025, 0.5, 0.975)))
+quantiles_bm <- logit_inv(q_theta(c(0.001, 0.005, 0.010, 0.025, 0.050,
+                                    0.100, 0.200, 0.500, 0.800, 0.900,
+                                    0.950, 0.975, 0.990, 0.995, 0.999)))
+```
+
+We can easily compare the previous method with the mixed inverse cumulative distribution function (CDF) obtained from the logit-normal components through the pushforwards.
+
+```{r, warning=FALSE}
+# Approximate CDF using cumulative trapezoidal rule
+cdf_p <- cumsum(dens_p) / sum(dens_p)  # Normalize to make it a proper CDF
+inverse_cdf <- approxfun(cdf_p, p_vals)
+
+inverse_cdf_vec <- function(q_vec) {
+  sapply(q_vec, inverse_cdf)
+}
+
+# Quantiles pushforward method
+quantiles_pf <- inverse_cdf_vec(c(0.001, 0.005, 0.010, 0.025, 0.050,
+                           0.100, 0.200, 0.500, 0.800, 0.900,
+                           0.950, 0.975, 0.990, 0.995, 0.999))
+```
+
+## Beta mixture (RBesT)
+
+-   Moments and mode
+
+```{r, warning=FALSE}
+# Extract weights and beta parameters
+w <- map["w", ]       # mixture weights
+a <- map["a", ]       # alpha parameters
+b <- map["b", ]       # beta parameters
+
+# Component-wise moments
+mu     <- a / (a + b)
+var    <- (a * b) / ((a + b)^2 * (a + b + 1))
+skew   <- 2 * (b - a) * sqrt(a + b + 1) / ((a + b + 2) * sqrt(a * b))
+kurt   <- 6 * ((a - b)^2 * (a + b + 1) - a * b * (a + b + 2)) /
+           (a * b * (a + b + 2) * (a + b + 3)) + 3
+
+# Component-wise mode (only valid if a > 1 and b > 1)
+mode_raw <- (a - 1) / (a + b - 2)
+mode_raw[a <= 1 | b <= 1] <- NA  # fallback for invalid mode definition
+
+# Mixture-level moments
+mix_mean <- sum(w * mu)
+mix_var  <- sum(w * (var + (mu - mix_mean)^2))
+mix_skew <- sum(w * ((mu - mix_mean)^3 + 3 * var * (mu - mix_mean))) / (mix_var^(3/2))
+mix_kurt <- sum(w * ((mu - mix_mean)^4 + 6 * var * (mu - mix_mean)^2 + 3 * var^2)) / (mix_var^2)
+mix_mode <- sum(w * mode_raw, na.rm = TRUE)  # weighted average, ignoring invalid components
+
+#We compare the moments to the ones yielded by automixfit to see if they are consistent
+mix_mean
+sqrt(mix_var)
+summary(map)
+```
+
+-   Quantiles
+
+```{r, warning=FALSE}
+quantiles_map<-qmix(map, c(0.001, 0.005, 0.010, 0.025, 0.050,
+                           0.100, 0.200, 0.500, 0.800, 0.900,
+                           0.950, 0.975, 0.990, 0.995, 0.999))
+```
+
+## Beta mixture (Bayesmeta)
+
+-   Moments and mode
+
+```{r, warning=FALSE}
+# Extract weights and beta parameters
+w <- map_bm_fit["w", ]       # mixture weights
+a <- map_bm_fit["a", ]       # alpha parameters
+b <- map_bm_fit["b", ]       # beta parameters
+
+# Component-wise moments
+mu_bm     <- a / (a + b)
+var_bm    <- (a * b) / ((a + b)^2 * (a + b + 1))
+skew_bm   <- 2 * (b - a) * sqrt(a + b + 1) / ((a + b + 2) * sqrt(a * b))
+kurt_bm   <- 6 * ((a - b)^2 * (a + b + 1) - a * b * (a + b + 2)) /
+           (a * b * (a + b + 2) * (a + b + 3)) + 3
+
+# Component-wise mode (only valid if a > 1 and b > 1)
+mode_raw_bm <- (a - 1) / (a + b - 2)
+mode_raw_bm[a <= 1 | b <= 1] <- NA  # fallback for invalid mode definition
+
+# Mixture-level moments
+mix_mean_bm <- sum(w * mu_bm)
+mix_var_bm  <- sum(w * (var_bm + (mu_bm - mix_mean_bm)^2))
+mix_skew_bm <- sum(w * ((mu_bm - mix_mean_bm)^3 + 3 * var_bm * (mu_bm - mix_mean_bm))) / (mix_var^(3/2))
+mix_kurt_bm <- sum(w * ((mu_bm - mix_mean_bm)^4 + 6 * var_bm * (mu_bm - mix_mean_bm)^2 + 3 * var_bm^2)) / (mix_var_bm^2)
+mix_mode_bm <- sum(w * mode_raw_bm, na.rm = TRUE)  # weighted average, ignoring invalid components
+
+#We compare the moments to the ones yielded by automixfit to see if they are consistent
+mix_mean_bm
+sqrt(mix_var_bm)
+summary(map_bm_fit)
+```
+
+-   Quantiles
+
+```{r}
+quantiles_map_bm<-qmix(map_bm_fit, c(0.001, 0.005, 0.010, 0.025, 0.050,
+                           0.100, 0.200, 0.500, 0.800, 0.900,
+                           0.950, 0.975, 0.990, 0.995, 0.999))
+```
+
+## Table
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(huxtable)
+
+# Create the data frame
+metrics_df <- data.frame(
+  Metric = c("Mean", "Standard deviation", "1st quantile", "Median", "3rd quantile", "Skewness", "Kurtosis", "Mode"),
+  Bayesmeta = c(mean_val, sqrt(variance_val), quantiles_p, skewness_val, kurtosis_val, mode_p),
+  RBesT = c(summary(map), mix_skew, mix_kurt, mix_mode)
+)
+
+# Convert to huxtable
+ht_metrics <- as_hux(metrics_df, add_colnames = TRUE)
+
+# Add a header row
+ht_metrics <- rbind(
+  c("Comparison of Bayesian Metrics", "", ""),
+  ht_metrics
+)
+
+# Merge header cells
+ht_metrics <- set_colspan(ht_metrics, 1, 1, 3)
+
+# Style header row
+ht_metrics <- set_background_color(ht_metrics, 1, everywhere, "#08312A")
+ht_metrics <- set_text_color(ht_metrics, 1, everywhere, "#00E47C")
+ht_metrics <- set_bold(ht_metrics, 1, everywhere, TRUE)
+ht_metrics <- set_font_size(ht_metrics, 1, everywhere, 12)
+align(ht_metrics)[1, ] <- "center"
+
+# Style column headers
+ht_metrics <- set_bold(ht_metrics, 2, everywhere, TRUE)
+ht_metrics <- set_background_color(ht_metrics, 2, everywhere, "#08312A")
+ht_metrics <- set_text_color(ht_metrics, 2, everywhere, "#00E47C")
+
+# Alternating row colors
+background_color(ht_metrics)[3:nrow(ht_metrics), ] <- rep(c("white", "lightgray"), length.out = nrow(ht_metrics) - 2)
+
+# Column widths
+col_width(ht_metrics) <- c(0.4, 0.3, 0.3)
+
+# Font size for content
+font_size(ht_metrics)[3:nrow(ht_metrics), ] <- 9
+
+# Align first column left
+align(ht_metrics)[3:nrow(ht_metrics), 1] <- "left"
+
+# Allow markdown rendering
+escape_contents(ht_metrics) <- FALSE
+
+# Display
+ht_metrics
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+quantiles_df <- data.frame(
+  Quantiles = c("0.001", "0.005", "0.010", "0.025", "0.050",
+                "0.100", "0.200", "0.500", "0.800", "0.900",
+                "0.950", "0.975", "0.990", "0.995", "0.999"),
+  Bayesmeta = quantiles_bm,
+  RBesT = quantiles_map
+)
+
+ht_quantiles <- as_hux(quantiles_df, add_colnames = TRUE)
+
+# Add header row
+ht_quantiles <- rbind(
+  c("Posterior Quantiles Comparison", "", ""),
+  ht_quantiles
+)
+
+# Merge header cells
+ht_quantiles <- set_colspan(ht_quantiles, 1, 1, 3)
+
+# Apply same styling as above
+ht_quantiles <- set_background_color(ht_quantiles, 1, everywhere, "#08312A")
+ht_quantiles <- set_text_color(ht_quantiles, 1, everywhere, "#00E47C")
+ht_quantiles <- set_bold(ht_quantiles, 1, everywhere, TRUE)
+ht_quantiles <- set_font_size(ht_quantiles, 1, everywhere, 12)
+align(ht_quantiles)[1, ] <- "center"
+
+# Column headers styling
+ht_quantiles <- set_bold(ht_quantiles, 2, everywhere, TRUE)
+ht_quantiles <- set_background_color(ht_quantiles, 2, everywhere, "#08312A")
+ht_quantiles <- set_text_color(ht_quantiles, 2, everywhere, "#00E47C")
+
+# Alternating row colors
+background_color(ht_quantiles)[3:nrow(ht_quantiles), ] <- rep(c("white", "lightgray"), length.out = nrow(ht_quantiles) - 2)
+
+# Column widths
+col_width(ht_quantiles) <- c(0.4, 0.3, 0.3)
+
+# Font size for content
+font_size(ht_quantiles)[3:nrow(ht_quantiles), ] <- 9
+
+# Align first column left
+align(ht_quantiles)[3:nrow(ht_quantiles), 1] <- "left"
+
+escape_contents(ht_quantiles) <- FALSE
+
+# Display
+ht_quantiles
+```
+
+As we can observe in the comparison of the metrics and in the graphical representation, the distribution obtained using RBesT differs from the ones we have obtained from the Bayesmeta package. This difference is mainly due to the approximation of the binary endpoint to a normal likelihood. It is expected that the differences disappear when dealing with normal endpoints. Therefore, RBesT is more suitable when the outcome is not normally distributed, because it respects the original likelihood and the MCMC computation yields an asymptotically true posterior distribution. However, Bayesmeta is faster and accurate when normality holds, being preferred due to its computational advantage.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Plot
+ggplot(df_plot, aes(x = p, y = density, color = model, linetype = model)) +
+  geom_line(size = 1.2) +
+  labs(title = "Overlay of Logit-Normal and Beta Mixture Densities",
+       x = "Response scale (p)",
+       y = "Density",
+       color = "Model",
+       linetype = "Model") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = c(0.8, 0.85),       # Position inside plot (x, y)
+    legend.justification = c(1, 1),       # Top-right corner
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9)
+  )
+```
+
+# ESS
+
+The (usual) intended use of a (MAP) prior is to reduce the number of control patients in the trial. The prior can be considered equivalent to a number of experimental observations, which is called the effective sample size (ESS) of the prior.
+
+A summary of this explanation based on [@neuenschwander2020predictively] for the estimation of the ESS is presented bellow:
+
+## Moments method
+
+It is based on computing the mean and standard deviation from the parameterized mixture distribution (estimated using EM if it was obtained through simulation). Next, a conjugate distribution that matches these moments allows for easier estimation for the ESS. Which can be derived from the updating rule:
+
+-   **Beta Prior** (for Binomial or Bernoulli data):\
+    $$\text{ESS} = a + b$$
+
+-   **Gamma Prior** (for Poisson or Exponential data):\
+    $$\text{ESS} = b$$
+
+-   **Normal Prior** (for Normal likelihood with known variance):\
+    If the prior is $\mathcal{N}(\mu, \frac{\sigma^2}{n_0})$, then:\
+    $$\text{ESS} = n_0$$
+
+Or can be obtained from the variance and precision ratio methods.
+
+### Variance & precision ratio methods
+
+It is based on comparing the variance (or precision) of the prior to the variance of an estimator $Y_N$ for the parameter from a sample of size $N$, averaged over the prior distribution of the parameter. *ESS* is the $N$ for which the two variances are the same.
+
+$$ \text{ESS} = \frac{N \cdot \mathbb{E}_\theta[\text{Var}(Y_N \mid \theta)]}{\text{Var}(\theta)}\text{.} $$
+
+Using $i_F(\theta)$ and $i_F(Y;\theta)$ as the expected and observed Fisher information for one information unit respectively, with:
+
+$$ i_F(\theta) = -\mathbb{E}_{Y_1 \mid \theta} \left[ \frac{d^2}{d\theta^2} \log f(Y_1 \mid \theta) \right]\text{,} $$
+
+we obtain the ESS for the :
+
+$$ \text{ESS}_{\text{VR}} = \frac{\mathbb{E}_\theta[i_F^{-1}(\theta)]}{\text{Var}(\theta)}\text{,} $$
+
+and
+
+$$ \text{ESS}_{\text{PR}} = \frac{1}{\text{Var}(\theta)} \cdot \mathbb{E}_\theta[i_F(\theta)]\text{.} $$
+
+## Morita method
+
+It defines the ESS as the number of observations ($m$) that would make the posterior information from a vague prior with the same mean match the information content of the actual prior.
+
+The ESS is given by:
+
+$$ \text{ESS}_{\text{MTM}} = \frac{i(p(\overline{\theta})) - i(p_0(\overline{\theta}))}{\mathbb{E}_{Y_1}[i_F(Y_1; \theta)]}\text{.} $$
+
+**Where**
+
+-   $i(p(\overline{\theta})) = -\frac{d^2}{d\theta^2} \log p(\theta) \big|_{\theta = \overline{\theta}}\text{ .}$
+
+    → Prior information (curvature of the actual prior).
+
+-   $i(p_0(\overline{\theta})) = -\frac{d^2}{d\theta^2} \log p_0(\theta) \big|_{\theta = \overline{\theta}}\text{ .}$
+
+    → Information of a vague prior with the same mean as $p(\theta)$.
+
+-   $i_F(Y_1; \theta)\text{.}$\
+    → Fisher information from one observation.
+
+-   $\mathbb{E}_{Y_1}[\cdot]\text{.}$\
+    → Expectation over the prior predictive distribution.
+
+## ELIR method
+
+Instead of evaluating the information ratio at the prior mean or mode, ELIR averages the ratio of prior curvature to Fisher information across all plausible values of the parameter (in this case designed by $\theta$).
+
+$$ \text{ESS}_{\text{ELIR}} = \mathbb{E}_\theta \left[ \frac{i(p(\theta))}{i_F(\theta)} \right]\text{.} $$
+
+**Where**
+
+-   $i(p(\theta)) = -\frac{d^2}{d\theta^2} \log p(\theta)\text{.}$\
+    → Prior information (curvature of the log-prior).
+
+-   $i_F(\theta) = \mathbb{E}_{Y \mid \theta} \left[ -\frac{d^2}{d\theta^2} \log f(Y \mid \theta) \right]\text{.}$\
+    → Fisher information from one observation.
+
+-   The expectation $\mathbb{E}_\theta[\cdot]$ is taken over the prior distribution.
+
+## Choosing for the method
+
+As previously noted, the lack of convergence in effective sample size (ESS) estimates across different methods necessitates a clear choice of approach. The ELIR method emerges as the only predictively consistent option, making it the preferred technique for accurately quantifying information in terms of an equivalent number of observations. However, its applicability is currently limited to one-dimensional parameters, and further research is needed to address the extension of its benefits to higher-dimensional settings. Additionally, in situations where data-prior conflict is present, the advantages of the ELIR method diminish, given the reduced influence of the prior in the calculation of ESS.
+
+### Beta mixture (RBesT)
+
+The ESS can be calculated in RBesT with the **`ess`** function. The default method in RBesT is the elir approach [@neuenschwander2020predictively] which results in reasonable ESS estimates. The moment matching approach leads to conservative (small) ESS estimates while the Morita [@morita2008determining] method tends to estimates liberal (large) ESS estimates when used with mixtures:
+
+```{r, warning=FALSE}
+ess_elir_map<-round(RBesT::ess(map, method = "elir")) ## default method
+ess_moment_map<-round(RBesT::ess(map, method = "moment"))
+ess_morita_map<-round(RBesT::ess(map, method = "morita"))
+```
+
+### Beta mixture (Bayesmeta)
+
+Once the bayesmeta distribution has been approximated to a beta distribution using `automixfit`, we can use the RBesT framework to calculate the ESS.
+
+```{r, warning=FALSE}
+ess_elir_map_bm<-round(RBesT::ess(map_bm_fit, method = "elir")) ## default method
+ess_moment_map_bm<-round(RBesT::ess(map_bm_fit, method = "moment"))
+ess_morita_map_bm<-round(RBesT::ess(map_bm_fit, method = "morita"))
+```
+
+### Logit-normal mixture
+
+When applying the explained methods in the `bayesmeta` parametric distribution framework, we may choose to use the response scale mixture of logit-normal distributions or work with the mixture of normals on the log-odds scale, depending on our intended downstream analysis.
+
+In order to replicate the methods for the logit-normal mixture distribution we used the known Fisher information for the binary endpoint:
+
+$$ \mathcal{I}(p) = \frac{1}{p(1 - p)} $$
+
+-   Moments method
+
+```{r}
+ess_moment <- round(mean_val * (1 - mean_val) / variance_val - 1)
+```
+
+-   Morita method
+
+    -   Evaluated at the mean
+
+    ```{r, warning=FALSE}
+    # First and second derivative of the log prior
+    log_prior <- function(p) log(dlogitnorm_mixture(p, weights, mus, sigmas))
+
+    log_prior_prime2 <- function(p) {
+      eps <- 1e-5
+      (log_prior(p + eps) - 2 * log_prior(p) + log_prior(p - eps)) / eps^2
+    }
+
+    # Prior curvature at mode
+    prior_info <- -log_prior_prime2(mean_val)
+
+    # Fisher information for binomial model
+    fisher_info <- 1 / (mean_val * (1 - mean_val))
+
+    # Morita ESS
+    ess_val <- round(prior_info / fisher_info)
+    ess_val
+    ```
+
+    -   Evaluated at the mode
+
+    ```{r, warning=FALSE}
+    # First and second derivative of the log prior
+    log_prior <- function(p) log(dlogitnorm_mixture(p, weights, mus, sigmas))
+
+    log_prior_prime2 <- function(p) {
+      eps <- 1e-5
+      (log_prior(p + eps) - 2 * log_prior(p) + log_prior(p - eps)) / eps^2
+    }
+
+    # Prior curvature at mode
+    prior_info <- -log_prior_prime2(mode_p)
+
+    # Fisher information for binomial model
+    fisher_info <- 1 / (mode_p * (1 - mode_p))
+
+    # Morita ESS
+    ess_val_mode <- round(prior_info / fisher_info)
+    ess_val_mode
+    ```
+
+-   ELIR method
+
+```{r}
+# Prior log-density
+log_prior <- function(p) log(dlogitnorm_mixture(p, weights, mus, sigmas))
+
+# Second derivative of log-prior
+log_prior_prime2 <- function(p) {
+  eps <- 1e-5
+  (log_prior(p + eps) - 2 * log_prior(p) + log_prior(p - eps)) / eps^2
+}
+
+# ELIR integrand
+elir_integrand <- function(p) {
+  if (any(p <= 0 | p >= 1)) return(0)
+  prior_density <- dlogitnorm_mixture(p, weights, mus, sigmas)
+  prior_curvature <- -log_prior_prime2(p)
+  fisher_info <- 1 / (p * (1 - p))
+  ratio <- prior_curvature / fisher_info
+  val <- ratio * prior_density
+  if (any(is.nan(val)) || any(is.infinite(val))) return(0)
+  return(val)
+}
+
+
+# Numerical integration over response scale
+elir <- round(integrate(elir_integrand, lower = 1e-5, upper = 1 - 1e-5)$value)
+elir
+```
+
+### Normal mixture
+
+If we prefer to work with the mixture of normals on the log-odds scale, we must account for the scale parameter of the likelihood, as the Normal-Normal Hierarchical Model (NNHM) is defined with known σ.
+
+As previously mentioned, we approximated the binary endpoint using the function `escalc` to obtain the effect size and corresponding standard deviation for each study. However, the global scale parameter across studies also needs to be approximated based on the known standard deviations. `Bayesmeta` provides two approaches for this: we can obtain the global scale using the function `uisd`, or we can define the scale using a proxy for the binary endpoint that depends on the mean value of theta:
+
+$$ \text{Proxy}(\mu) = 2 \cosh\left(\frac{\mu}{2}\right) $$
+
+-   Using the proxy of the binomial likelihood
+
+```{r}
+uisd <- function(mu) { 2 * cosh(mu / 2) }         # For log-odds MAP 
+
+bm_moment<-round(ess(map_bm, uisd = uisd, method = "vr"))      # Variance Ratio
+bm_moment_pr<-round(ess(map_bm, uisd = uisd, method = "pr"))      # Precision Ratio
+bm_morita<-round(ess(map_bm, uisd = uisd, method = "mtm.pt"))
+bm_elir<-round(ess(map_bm, uisd = uisd))
+```
+
+-   Using the fixed global variance
+
+```{r}
+uisd<-bayesmeta::uisd(AS_esc)       # For log-odds MAP 
+bm_moment_fix<-round(ess(map_bm, uisd = uisd, method = "vr"))  # Variance Ratio
+bm_moment_fit<-round(ess(map_bm, uisd = uisd, method = "pr"))  # Precision Ratio
+bm_morita_fix<-round(ess(map_bm, uisd = uisd, method = "mtm.pt"))
+bm_elir_fix<-round(ess(map_bm, uisd = uisd))
+```
+
+### Table
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(data.frame(
+  ESS = c("ELIR", "Moments", "Morita")
+,
+  "Beta mixture (RBesT)" = c(ess_elir_map, ess_moment_map, ess_morita_map),
+  "Beta mixture (Bayesmeta)" = c(ess_elir_map_bm, ess_moment_map_bm, ess_morita_map_bm),
+  "Logit-normal"  = c(elir, ess_moment,ess_val),
+  "Bayesmeta (proxy scale)" = c(bm_elir_fix, bm_moment_fix, bm_morita_fix),
+  "Bayesmeta (fixed scale)" = c(bm_elir, bm_moment, bm_morita),
+  check.names = FALSE
+  ), caption = "Comparison of ESS", align = "lccc", row.names = FALSE)
+```
+
+### Comparison of the same ESS calculated with RBesT vs Bayesmeta fucntions
+
+-   Adapting the normal distribution for the RBesT framework
+
+```{r}
+weights <- map_bm$support[,"weight"]
+mus     <- map_bm$support[,"mean"]
+sigmas  <- map_bm$support[,"sd.pred"]
+
+# Clean up vectors (remove names and ensure numeric)
+weights_vec <- unname(as.numeric(weights))
+mus_vec     <- unname(as.numeric(mus))
+sigmas_vec  <- unname(as.numeric(sigmas))
+
+# Step 1: Create list of triplets
+component_list <- mapply(function(w, m, s) c(w, m, s),
+                         weights_vec, mus_vec, sigmas_vec,
+                         SIMPLIFY = FALSE)
+
+# Step 2: Create mixture on logit scale
+prior_mixnorm <- do.call(mixnorm, component_list)
+```
+
+-   Comparison of the functions
+
+We can demonstrate that both packages rely on the same mechanics and converge in their results across the three methods.
+
+```{r}
+uisd<-bayesmeta::uisd(AS_esc)       # For log-odds MAP 
+
+#Bayesmeta
+bm_moment_fix<-ess(map_bm, uisd = uisd, method = "vr") # Variance Ratio
+bm_morita_fix<-ess(map_bm, uisd = uisd, method = "mtm.pt")
+bm_elir_fix<-ess(map_bm, uisd = uisd)
+
+#RBesT
+ess_elir_comp<-(RBesT::ess(prior_mixnorm, method = "elir", sigma= uisd)) 
+ess_moment_comp<-(RBesT::ess(prior_mixnorm, method = "moment", sigma= uisd))
+ess_morita_comp<-(RBesT::ess(prior_mixnorm, method = "morita", sigma= uisd))
+```
+
+```{r, echo=FALSE}
+
+knitr::kable(data.frame(
+  ESS = c("ELIR", "Moments", "Morita")
+,
+  "Bayesmeta (normal mixture)" = c(bm_elir_fix, bm_moment_fix, bm_morita_fix),
+  "RBesT (normal mixture)" = c(ess_elir_comp, ess_moment_comp, ess_morita_comp),
+  check.names = FALSE
+  ), caption = "Comparison of ESS", align = "lccc", row.names = FALSE)
+```
+
+# Robustification
+
+In order to avoid type‑I error inflation in the presence of a prior–data conflict (when the results of the new study strongly clash with the historical data), it is recommended to robustify the MAP distribution. RBesT incorporates this step directly into its workflow.
+
+## RBesT
+
+```{r}
+map_robust <- robustify(map,
+                        weight = 0.2,
+                        mean = 1 / 2)
+print(map_robust)
+
+# Generate sequence of points over a reasonable domain
+x_vals <- seq(0, 1, length.out = 1000)
+
+# Calculate densities
+map_dens <- dmix(map, x_vals)
+map_robust_dens <- dmix(map_robust, x_vals)
+
+# Plot original MAP
+plot(x_vals, map_dens, type = "l", lwd = 2, col = "blue",
+     main = "MAP vs Robustified MAP Density (RBesT: beta mixture)",
+     xlab = "x", ylab = "Density")
+
+# Overlay robustified MAP
+lines(x_vals, map_robust_dens, col = "red", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("MAP", "Robust MAP"),
+       col = c("blue", "red"), lwd = 2)
+```
+
+If we are using Bayesmeta (in the case of normal endpoints, or when performing a comparison across packages), we can easily apply robustification by following any of the proposed approaches.
+
+## Bayesmeta (automixfit)
+
+We can use the object obtained from the fitted distribution of the randomly sampled predictive distribution. Since this object is generated with `automixfit`, it is fully compatible with the RBesT robustification function.
+
+```{r}
+map_robust_bm <- robustify(map_bm_fit, weight = 0.2, mean = 1 / 2)
+print(map_robust_bm)
+
+# Generate sequence of points over a reasonable domain
+x_vals <- seq(0, 1, length.out = 1000)
+
+# Calculate densities
+map_dens <- dmix(map_bm_fit, x_vals)
+map_robust_dens <- dmix(map_robust_bm, x_vals)
+
+# Plot original MAP
+plot(x_vals, map_dens, type = "l", lwd = 2, col = "blue",
+     main = "MAP vs Robustified MAP Density (Bayesmeta: beta mixture)",
+     xlab = "x", ylab = "Density")
+
+# Overlay robustified MAP
+lines(x_vals, map_robust_dens, col = "red", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("MAP", "Robust MAP"),
+       col = c("blue", "red"), lwd = 2)
+```
+
+## Logit-normal
+
+We can replicate the method used in the RBesT package manually to preserve the logit‑normal mixture distribution. However, this is usually the least preferred scenario, since we generally do not want to use a logit‑normal distribution as a prior for the latent parameter.
+
+```{r}
+#Extract mixture components
+weights <- map_bm$support[,"weight"]
+mus     <- map_bm$support[,"mean"]
+sigmas  <- map_bm$support[,"sd.pred"]
+
+# Define vague component: logit-normal centered at 0 (logit(0.5)), wide spread
+vague_weight <- 0.2
+vague_mu <- 0
+vague_sigma <- 2.5
+
+# Combine original and vague components
+weights_robust <- c(weights * (1 - vague_weight), vague_weight)
+mus_robust     <- c(mus, vague_mu)
+sigmas_robust  <- c(sigmas, vague_sigma)
+
+# Define robustified mixture density
+dlogitnorm_mixture_robust <- function(p, weights, mus, sigmas) {
+  rowSums(sapply(1:length(weights), function(j) {
+    weights[j] * dlogitnorm(p, mu = mus[j], sigma = sigmas[j])
+  }))
+}
+
+# Evaluate densities
+dens_p_robust <- dlogitnorm_mixture_robust(p_vals, weights_robust, mus_robust, sigmas_robust)
+
+# Plot both original and robustified
+df_plot_robust <- data.frame(
+  p = p_vals,
+  original = dens_p,
+  robustified = dens_p_robust
+)
+
+library(ggplot2)
+ggplot(df_plot_robust, aes(x = p)) +
+  geom_line(aes(y = original), color = "blue", size = 1.2) +
+  geom_line(aes(y = robustified), color = "red", linetype = "dashed", size = 1.2) +
+  labs(title = "Original vs Robustified Logit-Normal Mixture",
+       x = "Response scale (p)",
+       y = "Density") +
+  theme_minimal()
+
+```
+
+## Bayesmeta: logit scale
+
+We can apply the RBesT function to the Bayesmeta analytical distribution on the logit scale rather than on the response scale.
+
+```{r}
+#Extract mixture components
+weights <- map_bm$support[,"weight"]
+mus     <- map_bm$support[,"mean"]
+sigmas  <- map_bm$support[,"sd.pred"]
+
+# Clean up vectors (remove names and ensure numeric)
+weights_vec <- unname(as.numeric(weights))
+mus_vec     <- unname(as.numeric(mus))
+sigmas_vec  <- unname(as.numeric(sigmas))
+
+# Step 1: Create list of triplets
+component_list <- mapply(function(w, m, s) c(w, m, s),
+                         weights_vec, mus_vec, sigmas_vec,
+                         SIMPLIFY = FALSE)
+
+# Step 2: Create mixture on logit scale
+prior_mixnorm <- do.call(mixnorm, component_list)
+# Step 3: Robustify
+map_robusti <- robustify(
+  prior_mixnorm,
+  weight = 0.2,
+  mean   = 0,
+  sigma  = 10
+)
+
+# Step 4: Now your object behaves like a logit-linked prior
+robust_logit_mixture <- map_robusti
+
+# Generate sequence of points over a reasonable domain
+x_vals <- seq(-3, 3, length.out = 1000)
+
+# Calculate densities
+map_dens <- dmix(prior_mixnorm, x_vals)
+map_robust_dens <- dmix(map_robusti, x_vals)
+
+# Plot original MAP
+plot(x_vals, map_dens, type = "l", lwd = 2, col = "blue",
+     main = "MAP vs Robustified MAP Density (Bayesmeta: normal)",
+     xlab = "x", ylab = "Density")
+
+# Overlay robustified MAP
+lines(x_vals, map_robust_dens, col = "red", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("MAP", "Robust MAP"),
+       col = c("blue", "red"), lwd = 2)
+```
+
+# References
