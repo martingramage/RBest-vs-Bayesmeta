@@ -71,6 +71,21 @@ This repository includes:
 - Supporting references from the Bayesian evidence synthesis literature.
 
 ---
+## Repository Structure
+
+The repository is organized around three complementary formats of the same methodological work:
+
+| File | Purpose |
+|--------|--------|
+| `comparison.qmd` | Quarto source used to generate the HTML version of the methodological vignette |
+| `comparison.Rmd` | R Markdown source used to generate the PDF manuscript |
+| `comparison.pdf` | Compiled PDF version of the methodological comparison |
+| `comparison.html` | Interactive HTML version of the vignette |
+| `presentation.pptx` | Slide deck summarizing the main findings and conclusions |
+
+The `.qmd` and `.Rmd` files contain the full analytical workflow and serve as the primary source documents for the project.
+
+---
 
 ## Main Topics Covered
 
