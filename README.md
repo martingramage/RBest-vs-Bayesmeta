@@ -77,11 +77,11 @@ The repository is organized around three complementary formats of the same metho
 
 | File | Purpose |
 |--------|--------|
-| `comparison.qmd` | Quarto source used to generate the HTML version of the methodological vignette |
-| `comparison.Rmd` | R Markdown source used to generate the PDF manuscript |
-| `comparison.pdf` | Compiled PDF version of the methodological comparison |
-| `comparison.html` | Interactive HTML version of the vignette |
-| `presentation.pptx` | Slide deck summarizing the main findings and conclusions |
+| `RBesT and Bayesmeta vignette..qmd` | Quarto source used to generate the HTML version of the methodological vignette |
+| `RBesT and Bayesmeta vignette..Rmd` | R Markdown source used to generate the PDF manuscript |
+| `RBesT and Bayesmeta vignette..pdf` | Compiled PDF version of the methodological comparison |
+| `RBesT and Bayesmeta vignette..html` | Interactive HTML version of the vignette |
+| `RBesT vs Bayesmeta in MAP computation.tx` | Slide deck summarizing the main findings and conclusions |
 
 The `.qmd` and `.Rmd` files contain the full analytical workflow and serve as the primary source documents for the project.
 
